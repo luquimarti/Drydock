@@ -1,0 +1,24 @@
+# Never commit firmware, disc images, files extracted from a disc, or code
+# generated from a game: those stay on the player's machine.
+bios/
+roms/
+disks/
+discs/
+games/
+recomp/
+*.bin
+*.cue
+*.iso
+*.chd
+*.ccd
+*.img
+*.mds
+*.mdf
+*.PRG
+*.prg
+
+# build output
+build*/
+out/
+*.png
+gmon.out

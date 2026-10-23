@@ -1,0 +1,538 @@
+diff --git a/apps/ymir-sdl3/CMakeLists.txt b/apps/ymir-sdl3/CMakeLists.txt
+index 841237e..6a1e7f8 100644
+--- a/apps/ymir-sdl3/CMakeLists.txt
++++ b/apps/ymir-sdl3/CMakeLists.txt
+@@ -558,21 +558,27 @@ target_link_libraries(ymir-sdl3 PRIVATE
+     stb::stb
+     dr_libs::dr_libs
+ )
+-## YmirRecomp: link recompiled game code into the frontend
+-set(YMIR_RECOMP_ROOT "" CACHE PATH "YmirRecomp checkout (enables recompiled code)")
+-set(YMIR_RECOMP_GENERATED "" CACHE FILEPATH "Generated native code (sh2recomp output)")
+-if (YMIR_RECOMP_ROOT AND YMIR_RECOMP_GENERATED)
+-    message(STATUS "YmirRecomp: linking ${YMIR_RECOMP_GENERATED}")
+-    target_sources(ymir-sdl3 PRIVATE ${YMIR_RECOMP_ROOT}/runtime/src_runtime.cpp ${YMIR_RECOMP_GENERATED})
+-    target_include_directories(ymir-sdl3 PRIVATE ${YMIR_RECOMP_ROOT}/runtime/include)
++## Drydock (YmirRecomp): recompiled code runtime, game libraries, ship mode
++set(YMIR_RECOMP_ROOT "" CACHE PATH "Drydock (YmirRecomp) checkout: enables recompiled code")
++set(YMIR_RECOMP_GENERATED "" CACHE STRING "Optional: generated game code (sh2recomp output files) linked in")
++if (YMIR_RECOMP_ROOT)
++    include(${YMIR_RECOMP_ROOT}/drydock.cmake)
++    target_sources(ymir-sdl3 PRIVATE src/app/ship/ship.cpp)
++    target_link_libraries(ymir-sdl3 PRIVATE drydock-runtime drydock-build)
+     target_compile_definitions(ymir-sdl3 PRIVATE YMIR_RECOMP_NATIVE)
+-    # The generated file is huge and goto-heavy: moderate optimization, no LTO.
+-    if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+-        set_source_files_properties(${YMIR_RECOMP_GENERATED} PROPERTIES COMPILE_OPTIONS "/O1;/clang:-fno-lto")
+-    else ()
+-        set_source_files_properties(${YMIR_RECOMP_GENERATED} PROPERTIES COMPILE_OPTIONS "-O1;-fno-lto")
++    set_source_files_properties(src/app/ship/ship.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
++    if (YMIR_RECOMP_GENERATED)
++        message(STATUS "Drydock: linking generated game code")
++        target_sources(ymir-sdl3 PRIVATE ${YMIR_RECOMP_GENERATED})
++        target_compile_definitions(ymir-sdl3 PRIVATE YMIR_RECOMP_LINKED)
++        # Large, goto-heavy generated code: moderate optimization, no LTO.
++        if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
++            set_source_files_properties(${YMIR_RECOMP_GENERATED} PROPERTIES COMPILE_OPTIONS "/O1;/clang:-fno-lto")
++        else ()
++            set_source_files_properties(${YMIR_RECOMP_GENERATED} PROPERTIES COMPILE_OPTIONS "-O1;-fno-lto")
++        endif ()
++        set_source_files_properties(${YMIR_RECOMP_GENERATED} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+     endif ()
+-    set_source_files_properties(${YMIR_RECOMP_GENERATED} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+ endif ()
+ 
+ if (WIN32)
+diff --git a/apps/ymir-sdl3/src/app/app.cpp b/apps/ymir-sdl3/src/app/app.cpp
+index 94f0651..c98b33e 100644
+--- a/apps/ymir-sdl3/src/app/app.cpp
++++ b/apps/ymir-sdl3/src/app/app.cpp
+@@ -84,6 +84,7 @@
+ #include <ymir/sys/saturn.hpp>
+ 
+ #ifdef YMIR_RECOMP_NATIVE
++    #include <app/ship/ship.hpp>
+     #include <ymir_recomp/runtime.hpp>
+ #endif
+ 
+@@ -351,7 +352,15 @@ int App::Run(const CommandLineOptions &options) {
+     // 5. user profile, if it contains the settings file
+     // 6. show dialog to choose "installed" or "portable" mode
+     // NOTE: Under Flatpak, portable profile isn't allowed; installed profile is forced
+-    if (!options.profilePath.empty()) {
++#ifdef YMIR_RECOMP_NATIVE
++    // Drydock ship: always portable, next to the executable
++    const bool isShip = ship::Init(m_context, Profile::GetExecutableProfilePath());
++#else
++    const bool isShip = false;
++#endif
++    if (isShip) {
++        m_context.profile.UseExecutableProfilePath();
++    } else if (!options.profilePath.empty()) {
+         // -p option
+         m_context.profile.UseProfilePath(options.profilePath);
+     } else if (options.forceUserProfile) {
+@@ -481,7 +490,7 @@ int App::Run(const CommandLineOptions &options) {
+     if (!options.gameDiscPath.empty()) {
+         // This also inserts the game-specific cartridges or the one configured by the user in Settings > Cartridge
+         m_discService.LoadDiscImage(options.gameDiscPath, false);
+-    } else if (settings.general.rememberLastLoadedDisc && !m_context.state.recentDiscs.empty()) {
++    } else if ((settings.general.rememberLastLoadedDisc || isShip) && !m_context.state.recentDiscs.empty()) {
+         m_discService.LoadDiscImage(m_context.state.recentDiscs[0], false);
+     } else {
+         m_context.EnqueueEvent(events::emu::InsertCartridgeFromSettings());
+@@ -532,6 +541,9 @@ int App::Run(const CommandLineOptions &options) {
+ 
+     RunEmulator();
+ 
++#ifdef YMIR_RECOMP_NATIVE
++    ship::Shutdown();
++#endif
+     return 0;
+ }
+ 
+@@ -2039,9 +2051,20 @@ void App::RunEmulator() {
+         {
+             fmt::memory_buffer buf{};
+             auto bufWriter = std::back_inserter(buf);
+-            fmt::format_to(bufWriter, "Ymir " Ymir_VERSION);
++#ifdef YMIR_RECOMP_NATIVE
++            const bool shipTitle = ship::Enabled();
++#else
++            const bool shipTitle = false;
++#endif
++            if (shipTitle) {
++#ifdef YMIR_RECOMP_NATIVE
++                fmt::format_to(bufWriter, "{}", ship::WindowTitle());
++#endif
++            } else {
++                fmt::format_to(bufWriter, "Ymir " Ymir_VERSION);
++            }
+ 
+-            if (settings.gui.showGameNameOnTitleBar) {
++            if (settings.gui.showGameNameOnTitleBar && !shipTitle) {
+                 fmt::format_to(bufWriter, " - ");
+                 std::unique_lock lock{m_context.locks.disc};
+                 const media::CDInterface &cdif = m_context.saturn.GetCDInterface();
+@@ -2917,6 +2940,9 @@ void App::RunEmulator() {
+             // Draw windows and modals
+             m_windowManagerService.DrawWindows();
+             m_windowManagerService.DrawGenericModal();
++#ifdef YMIR_RECOMP_NATIVE
++            ship::Draw(m_discService);
++#endif
+ 
+             auto *viewport = ImGui::GetMainViewport();
+ 
+@@ -3556,6 +3582,12 @@ void App::EmulatorThread() {
+             }
+             case OpenHostDevice: //
+             {
++#ifdef YMIR_RECOMP_NATIVE
++                if (ship::Enabled()) {
++                    m_context.DisplayMessage("Disc drives are not supported in this build");
++                    break;
++                }
++#endif
+                 auto &path = std::get<std::string>(evt.value);
+                 // LoadDiscImage locks the disc mutex
+                 if (m_context.saturn.instance->OpenHostCDDrive(path)) {
+@@ -3574,6 +3606,9 @@ void App::EmulatorThread() {
+             }
+             case EjectDisc: //
+             {
++#ifdef YMIR_RECOMP_NATIVE
++                if (ship::Enabled()) break; // the game disc stays in
++#endif
+                 std::unique_lock lock{m_context.locks.disc};
+                 m_context.saturn.instance->EjectDisc();
+                 m_context.state.loadedDiscImagePath.clear();
+diff --git a/apps/ymir-sdl3/src/app/services/disc_service.cpp b/apps/ymir-sdl3/src/app/services/disc_service.cpp
+index 247f2ac..75c77bc 100644
+--- a/apps/ymir-sdl3/src/app/services/disc_service.cpp
++++ b/apps/ymir-sdl3/src/app/services/disc_service.cpp
+@@ -1,4 +1,8 @@
+ #include "disc_service.hpp"
++
++#ifdef YMIR_RECOMP_NATIVE
++    #include <app/ship/ship.hpp>
++#endif
+ #include "rom_service.hpp"
+ 
+ #include <app/events/emu_event_factory.hpp>
+@@ -65,6 +69,13 @@ void DiscService::ProcessOpenDiscImageFileDialogSelection(const char *const *fil
+ bool DiscService::LoadDiscImage(std::filesystem::path path, bool showErrorModal) {
+     auto &settings = m_settings;
+ 
++#ifdef YMIR_RECOMP_NATIVE
++    // Drydock ship: only the game's own disc, once the game is built
++    if (!ship::BeforeLoadDisc(path)) {
++        return false;
++    }
++#endif
++
+     // Try to load disc image from specified path
+     devlog::info<grp::base>("Loading disc image from {}", path);
+     ymir::media::Disc disc{};
+diff --git a/apps/ymir-sdl3/src/app/shared_context.cpp b/apps/ymir-sdl3/src/app/shared_context.cpp
+index 13c6a3e..7e73dfa 100644
+--- a/apps/ymir-sdl3/src/app/shared_context.cpp
++++ b/apps/ymir-sdl3/src/app/shared_context.cpp
+@@ -5,15 +5,23 @@
+ #include <ymir/sys/saturn.hpp>
+ 
+ #ifdef YMIR_RECOMP_NATIVE
++    #include <app/ship/ship.hpp>
+     #include <ymir_recomp/runtime.hpp>
+ 
+-// Generated by YmirRecomp's sh2recomp for one game; it also restricts itself
+-// to that game's product number.
+-void RegisterNative(ymir_recomp::Runtime &rt);
++    #ifdef YMIR_RECOMP_LINKED
++// A game recompiled by Drydock and linked into this executable.
++extern "C" void drydock_register(drydock::Registrar *rt);
++    #endif
+ 
+ namespace {
+ std::unique_ptr<ymir_recomp::Runtime> g_recompRuntime;
+ } // namespace
++
++namespace app {
++ymir_recomp::Runtime *GetRecompRuntime() {
++    return g_recompRuntime.get();
++}
++} // namespace app
+ #endif
+ 
+ namespace app {
+@@ -22,8 +30,11 @@ SharedContext::SharedContext() {
+     saturn.instance = std::make_unique<ymir::Saturn>();
+ #ifdef YMIR_RECOMP_NATIVE
+     g_recompRuntime = std::make_unique<ymir_recomp::Runtime>(*saturn.instance);
+-    RegisterNative(*g_recompRuntime);
++    #ifdef YMIR_RECOMP_LINKED
++    g_recompRuntime->RegisterStatic(drydock_register);
+     g_recompRuntime->Attach();
++    #endif
++    // otherwise a game library is loaded (and the runtime attached) on demand
+ #endif
+ }
+ 
+diff --git a/apps/ymir-sdl3/src/app/ship/ship.cpp b/apps/ymir-sdl3/src/app/ship/ship.cpp
+new file mode 100644
+index 0000000..317461b
+--- /dev/null
++++ b/apps/ymir-sdl3/src/app/ship/ship.cpp
+@@ -0,0 +1,252 @@
++#include "ship.hpp"
++
++#include <app/events/emu_event_factory.hpp>
++#include <app/services/disc_service.hpp>
++#include <app/shared_context.hpp>
++
++#include <build.hpp> // Drydock: recipe, disc check, game build
++#include <ymir_recomp/runtime.hpp>
++
++#include <SDL3/SDL_events.h>
++#include <imgui.h>
++
++#include <atomic>
++#include <mutex>
++#include <thread>
++
++namespace app::ship {
++
++namespace {
++
++    enum class Phase { Off, NeedDisc, Building, Failed, Ready };
++
++    struct State {
++        SharedContext *context = nullptr;
++        std::filesystem::path exeDir;
++        drydock::Recipe recipe;
++
++        std::atomic<Phase> phase{Phase::Off};
++        std::mutex mutex;           // guards the strings and paths below
++        std::string message;        // why the last disc was refused / the build failed
++        std::filesystem::path disc; // disc being built from
++
++        // build worker
++        std::thread worker;
++        std::atomic<bool> cancel{false};
++        std::atomic<bool> workerDone{false};
++        bool workerOk = false;
++        std::string workerError;
++        std::atomic<float> fraction{0.0f};
++        std::atomic<drydock::Stage> stage{drydock::Stage::CheckingDisc};
++        std::string detail;
++    };
++
++    State g_state;
++
++    std::string U8(const std::filesystem::path &p) {
++        const std::u8string s = p.u8string();
++        return std::string(s.begin(), s.end());
++    }
++
++    void SetMessage(std::string msg) {
++        std::lock_guard lock(g_state.mutex);
++        g_state.message = std::move(msg);
++    }
++
++    void StartBuild(const std::filesystem::path &disc) {
++        State &s = g_state;
++        if (s.worker.joinable()) s.worker.join();
++        {
++            std::lock_guard lock(s.mutex);
++            s.disc = disc;
++            s.message.clear();
++            s.detail.clear();
++        }
++        s.cancel = false;
++        s.workerDone = false;
++        s.fraction = 0.0f;
++        s.phase = Phase::Building;
++        s.worker = std::thread([disc] {
++            State &s = g_state;
++            const drydock::BuildResult r = drydock::BuildGame(
++                s.recipe, U8(disc), U8(s.exeDir), drydock::BundledToolchain(U8(s.exeDir)),
++                [](drydock::Stage stage, float fraction, const std::string &detail) {
++                    g_state.stage = stage;
++                    g_state.fraction = fraction;
++                    std::lock_guard lock(g_state.mutex);
++                    g_state.detail = detail;
++                },
++                &s.cancel);
++            {
++                std::lock_guard lock(s.mutex);
++                s.workerOk = r.ok;
++                s.workerError = r.error;
++            }
++            s.workerDone = true;
++        });
++    }
++
++    void Quit() {
++        SDL_Event quit{};
++        quit.type = SDL_EVENT_QUIT;
++        SDL_PushEvent(&quit);
++    }
++
++} // namespace
++
++bool Init(SharedContext &context, const std::filesystem::path &exeDir) {
++    State &s = g_state;
++    const std::filesystem::path recipePath = exeDir / "ship" / "recipe.toml";
++    std::error_code ec;
++    if (!std::filesystem::exists(recipePath, ec)) return false;
++    std::string error;
++    if (!drydock::LoadRecipe(U8(recipePath), s.recipe, error)) {
++        context.DisplayMessage(error);
++        return false;
++    }
++    s.context = &context;
++    s.exeDir = exeDir;
++    s.phase = Phase::NeedDisc;
++    // nothing runs until the game disc is validated and the game is built
++    context.EnqueueEvent(events::emu::SetPaused(true));
++    return true;
++}
++
++bool Enabled() {
++    return g_state.phase != Phase::Off;
++}
++
++std::string WindowTitle() {
++    const State &s = g_state;
++    return (s.recipe.ship.empty() ? "Drydock" : s.recipe.ship) + " - " + s.recipe.title;
++}
++
++bool BeforeLoadDisc(const std::filesystem::path &path) {
++    State &s = g_state;
++    if (s.phase == Phase::Off) return true;
++    if (s.phase == Phase::Building) {
++        s.context->DisplayMessage("Please wait until " + s.recipe.title + " is ready.");
++        return false;
++    }
++
++    const drydock::DiscCheck check = drydock::CheckDisc(s.recipe, U8(path));
++    if (!check.ok) {
++        SetMessage(check.error);
++        if (s.phase != Phase::Ready) s.phase = Phase::NeedDisc;
++        else s.context->DisplayMessage(check.error);
++        return false;
++    }
++
++    if (!drydock::IsLibraryCurrent(s.recipe, U8(s.exeDir))) {
++        StartBuild(path);
++        return false;
++    }
++
++    ymir_recomp::Runtime *rt = GetRecompRuntime();
++    if (rt && rt->Product() != s.recipe.product) {
++        std::string error;
++        if (!rt->LoadGameLibrary(drydock::LibraryPath(s.recipe, U8(s.exeDir)), error)) {
++            SetMessage("Could not load the recompiled game: " + error);
++            s.phase = Phase::Failed;
++            return false;
++        }
++        rt->Attach();
++    }
++
++    // start the game from a clean boot with the disc in place
++    s.phase = Phase::Ready;
++    s.context->EnqueueEvent(events::emu::HardReset());
++    s.context->EnqueueEvent(events::emu::SetPaused(false));
++    return true;
++}
++
++void Draw(services::DiscService &discs) {
++    State &s = g_state;
++    const Phase phase = s.phase;
++    if (phase == Phase::Off || phase == Phase::Ready) return;
++
++    if (phase == Phase::Building && s.workerDone) {
++        s.worker.join();
++        bool ok;
++        std::string error;
++        std::filesystem::path disc;
++        {
++            std::lock_guard lock(s.mutex);
++            ok = s.workerOk;
++            error = s.workerError;
++            disc = s.disc;
++        }
++        if (ok) {
++            s.phase = Phase::NeedDisc; // BeforeLoadDisc takes it from here
++            s.context->EnqueueEvent(events::emu::LoadDisc(disc));
++        } else {
++            SetMessage(error);
++            s.phase = s.cancel ? Phase::NeedDisc : Phase::Failed;
++        }
++    }
++
++    const ImGuiViewport *vp = ImGui::GetMainViewport();
++    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
++                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
++    ImGui::SetNextWindowSizeConstraints(ImVec2(480, 0), ImVec2(720, FLT_MAX));
++    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize |
++                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove;
++    if (ImGui::Begin((WindowTitle() + "###drydock_ship").c_str(), nullptr, flags)) {
++        const std::string game = s.recipe.DisplayName();
++        std::string message, detail;
++        {
++            std::lock_guard lock(s.mutex);
++            message = s.message;
++            detail = s.detail;
++        }
++        const ImVec4 errorColor(1.0f, 0.45f, 0.4f, 1.0f);
++
++        if (s.phase == Phase::Building) {
++            ImGui::TextWrapped("Preparing %s for this PC. This happens only once and takes a few minutes.",
++                               s.recipe.title.c_str());
++            ImGui::Spacing();
++            ImGui::TextUnformatted(drydock::StageName(s.stage));
++            ImGui::ProgressBar(s.fraction, ImVec2(-FLT_MIN, 0));
++            ImGui::TextDisabled("%s", detail.c_str());
++            ImGui::Spacing();
++            if (ImGui::Button("Cancel")) s.cancel = true;
++        } else {
++            if (s.phase == Phase::Failed) {
++                ImGui::TextColored(errorColor, "Could not prepare %s.", s.recipe.title.c_str());
++            } else {
++                ImGui::TextWrapped("Select your copy of %s (a .cue, .chd, .iso or .ccd disc image).", game.c_str());
++            }
++            if (!message.empty()) {
++                ImGui::Spacing();
++                ImGui::PushStyleColor(ImGuiCol_Text, errorColor);
++                ImGui::TextWrapped("%s", message.c_str());
++                ImGui::PopStyleColor();
++            }
++            ImGui::Spacing();
++            if (ImGui::Button("Select disc...")) discs.OpenLoadDiscDialog();
++            if (s.phase == Phase::Failed) {
++                ImGui::SameLine();
++                std::filesystem::path disc;
++                {
++                    std::lock_guard lock(s.mutex);
++                    disc = s.disc;
++                }
++                if (ImGui::Button("Retry") && !disc.empty()) {
++                    s.phase = Phase::NeedDisc;
++                    s.context->EnqueueEvent(events::emu::LoadDisc(disc));
++                }
++            }
++            ImGui::SameLine();
++            if (ImGui::Button("Quit")) Quit();
++        }
++    }
++    ImGui::End();
++}
++
++void Shutdown() {
++    State &s = g_state;
++    s.cancel = true;
++    if (s.worker.joinable()) s.worker.join();
++}
++
++} // namespace app::ship
+diff --git a/apps/ymir-sdl3/src/app/ship/ship.hpp b/apps/ymir-sdl3/src/app/ship/ship.hpp
+new file mode 100644
+index 0000000..2fda245
+--- /dev/null
++++ b/apps/ymir-sdl3/src/app/ship/ship.hpp
+@@ -0,0 +1,54 @@
++#pragma once
++
++// Ship mode (Drydock): this build of Ymir is one recompiled game.
++//
++// Enabled when <exe dir>/ship/recipe.toml exists. Then the frontend:
++//   - keeps its profile (settings, saves) next to the executable
++//   - only accepts the disc the recipe describes (product number and the
++//     SHA-256 of every code file), refusing anything else
++//   - on first use, recompiles the game from that disc into
++//     <exe dir>/recomp/<product>.dll with the bundled compiler, showing
++//     progress, and loads it
++//   - holds emulation until all of that is done
++
++#include <filesystem>
++#include <string>
++
++namespace ymir_recomp {
++class Runtime;
++} // namespace ymir_recomp
++
++namespace app {
++
++class SharedContext;
++
++/// The native code runtime (null in builds without Drydock).
++ymir_recomp::Runtime *GetRecompRuntime();
++
++namespace services {
++    class DiscService;
++} // namespace services
++
++namespace ship {
++
++/// Loads the ship recipe from <exeDir>/ship. Returns true if this is a ship.
++bool Init(SharedContext &context, const std::filesystem::path &exeDir);
++
++bool Enabled();
++
++/// Window title, e.g. "TheBortas - PDZ II".
++std::string WindowTitle();
++
++/// Called before a disc image is loaded (emulator thread). Returns true to
++/// let it load; false if it is refused, or deferred until the game is built.
++bool BeforeLoadDisc(const std::filesystem::path &path);
++
++/// Draws the ship's own windows (disc selection, build progress). GUI thread,
++/// once per frame.
++void Draw(services::DiscService &discs);
++
++/// Stops a build in progress.
++void Shutdown();
++
++} // namespace ship
++} // namespace app

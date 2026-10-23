@@ -1,0 +1,4 @@
+[submodule "external/Ymir"]
+	path = external/Ymir
+	url = https://github.com/luquimarti/YmirRCMP.git
+	branch = recomp

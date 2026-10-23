@@ -1,0 +1,30 @@
+# Builds the Drydock tools on Linux and runs the differential fuzzer
+# (recompiled code vs Ymir's interpreter: registers, memory and cycles).
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang lld
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_LINKER_TYPE=LLD
+
+      - name: Build
+        run: cmake --build build --target sh2recomp drydock ymir-headless sh2fuzz-run
+
+      - name: Fuzz (recompiled code vs interpreter)
+        run: build/tests/fuzz/sh2fuzz-run build/tests/fuzz/fuzz_programs.bin
