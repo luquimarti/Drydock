@@ -28,8 +28,7 @@ repository and contains:
 - default settings and a release workflow that packages a ready-to-use build
   for players.
 
-Ships are named after starships, because every one of them is a cruiser built
-in the same dock.
+Every ship gets its own name, like any vessel leaving the dock.
 
 | Ship | Title | Status |
 |---|---|---|
