@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/luquimarti/Drydock/actions/workflows/ci.yml/badge.svg)](https://github.com/luquimarti/Drydock/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+[![Made in Argentina](https://img.shields.io/badge/made%20in-Argentina%20%F0%9F%87%A6%F0%9F%87%B7-74ACDF)](#)
 [![Patreon](https://img.shields.io/badge/Patreon-support-F96854?logo=patreon&logoColor=white)](https://www.patreon.com/cw/luquimarti)
 
 Drydock takes the SH-2 code of a Saturn title, translates it ahead of time into
@@ -139,3 +140,7 @@ early access, just thanks.
 
 GPLv3, like Ymir (`ymir-core` is linked into every tool). Not affiliated with
 any publisher or hardware maker; all trademarks belong to their owners.
+
+---
+
+🇦🇷 Made in Argentina.
