@@ -53,7 +53,15 @@ jobs:
             "-DCMAKE_LINKER=$LLVM/lld-link.exe" "-DCMAKE_AR=$LLVM/llvm-lib.exe" -DCMAKE_LINKER_TYPE=LLD
 
       - name: Build
-        run: cmake --build build --target drydock ymir-headless sh2recomp
+        shell: bash
+        run: |
+          # On failure, surface the first errors as annotations (visible without the full log)
+          if ! cmake --build build --target drydock ymir-headless sh2recomp > build.log 2>&1; then
+            grep -E "error|FAILED|undefined" build.log | head -25 | while IFS= read -r l; do echo "::error::${l:0:900}"; done
+            tail -40 build.log
+            exit 1
+          fi
+          tail -5 build.log
 
       - name: Package
         shell: bash
