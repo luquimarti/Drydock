@@ -26,6 +26,14 @@ jobs:
       - name: Build
         run: cmake --build build --target sh2recomp drydock ymir-headless sh2fuzz-run
 
+      - name: Inspect (synthetic disc)
+        run: |
+          python3 tests/inspect/make_test_iso.py t
+          build/tools/drydock/drydock --inspect --disc t/test.iso --dump t/race | tee t/inspect.txt
+          grep -q "DATA/OVL.PRG   -> 0x06080000" t/inspect.txt
+          sed -n '/recipe skeleton/,$p' t/inspect.txt | tail -n +2 > t/recipe.toml
+          build/tools/drydock/drydock --recipe t/recipe.toml --disc t/test.iso --check
+
       - name: Fuzz (recompiled code vs interpreter)
         run: build/tests/fuzz/sh2fuzz-run build/tests/fuzz/fuzz_programs.bin
 
@@ -93,9 +101,15 @@ jobs:
       - name: Smoke test
         shell: bash
         run: |
+          set -e
           P=pkg/drydock-tools
-          $P/drydock.exe --help 2>&1 | grep -q -- "--inspect"
-          $P/ymir-headless.exe 2>&1 | grep -q usage
+          (./$P/drydock.exe --help 2>&1 || true) | grep -q -- "--inspect"
+          (./$P/ymir-headless.exe 2>&1 || true) | grep -q usage
+          python tests/inspect/make_test_iso.py t
+          ./$P/drydock.exe --inspect --disc t/test.iso --dump t/race | tee t/inspect.txt
+          grep -q "DATA/OVL.PRG   -> 0x06080000" t/inspect.txt
+          sed -n '/recipe skeleton/,$p' t/inspect.txt | tail -n +2 > t/recipe.toml
+          ./$P/drydock.exe --recipe t/recipe.toml --disc t/test.iso --check
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
