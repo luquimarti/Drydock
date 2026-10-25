@@ -101,7 +101,21 @@ ship's release workflow.
 
 ## Tools
 
+Windows builds of the tools (with the Clang/LLD that `drydock` compiles with)
+are attached to every CI run as `drydock-tools-windows-x64`: open the latest
+[CI run](https://github.com/luquimarti/Drydock/actions/workflows/ci.yml) and
+download it from **Artifacts**.
+
 ```sh
+# start a new ship: disc header, every file with size and SHA-256,
+# and a recipe skeleton (product, boot file and its load address)
+drydock --inspect --disc disc.cue
+
+# find where the other code files are loaded: dump work RAM while each
+# part is in use, then inspect again with the dumps
+ymir-headless bios.bin disc.cue 3000 --press 900:906:start ... --dump 3000:race
+drydock --inspect --disc disc.cue --dump race
+
 # record control transfers while playing (interpreted)
 ymir-headless bios.bin disc.cue 7000 --press 1300:1306:start ... --trace trace.txt
 

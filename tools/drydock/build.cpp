@@ -80,34 +80,76 @@ namespace {
             return false;
         }
 
-        // Finds a file in the root directory (names compared without ";1").
-        bool FindFile(const std::string &name, uint32_t &lba, uint32_t &size) const {
-            uint8_t sec[2048];
-            if (!Read(16, sec) || memcmp(sec + 1, "CD001", 5) != 0) return false;
-            const uint8_t *root = sec + 156;
-            const uint32_t rootLba = Le32(root + 2), rootSize = Le32(root + 10);
-            for (uint32_t s = 0; s < (rootSize + 2047) / 2048; s++) {
+        // Visits every directory record under a directory extent (names without ";1"; "." and ".." skipped).
+        template <typename F>
+        bool ForEachEntry(uint32_t dirLba, uint32_t dirSize, F &&fn) const {
+            for (uint32_t s = 0; s < (dirSize + 2047) / 2048; s++) {
                 uint8_t dir[2048];
-                if (!Read(rootLba + s, dir)) return false;
+                if (!Read(dirLba + s, dir)) return false;
                 for (uint32_t p = 0; p < 2048 && dir[p] != 0; p += dir[p]) {
                     const uint8_t *r = dir + p;
                     const uint8_t nameLen = r[32];
+                    if (nameLen == 1 && (r[33] == 0 || r[33] == 1)) continue; // "." and ".."
                     std::string entry((const char *)r + 33, nameLen);
                     const size_t semi = entry.find(';');
                     if (semi != std::string::npos) entry.resize(semi);
-                    if (entry == name && !(r[25] & 2)) {
-                        lba = Le32(r + 2);
-                        size = Le32(r + 10);
-                        return true;
-                    }
+                    if (!entry.empty() && entry.back() == '.') entry.pop_back();
+                    fn(entry, Le32(r + 2), Le32(r + 10), (r[25] & 2) != 0);
                 }
             }
-            return false;
+            return true;
         }
 
-        bool ReadFile(const std::string &name, std::vector<uint8_t> &out) const {
+        bool Root(uint32_t &lba, uint32_t &size) const {
+            uint8_t sec[2048];
+            if (!Read(16, sec) || memcmp(sec + 1, "CD001", 5) != 0) return false;
+            lba = Le32(sec + 156 + 2);
+            size = Le32(sec + 156 + 10);
+            return true;
+        }
+
+        // Finds a file by path ("FILE.BIN" or "DIR/FILE.BIN"; names compared without ";1").
+        bool FindFile(const std::string &path, uint32_t &lba, uint32_t &size) const {
+            uint32_t dirLba, dirSize;
+            if (!Root(dirLba, dirSize)) return false;
+            size_t from = 0;
+            while (true) {
+                const size_t slash = path.find('/', from);
+                const std::string part = path.substr(from, slash == std::string::npos ? std::string::npos : slash - from);
+                const bool wantDir = slash != std::string::npos;
+                bool found = false;
+                uint32_t foundLba = 0, foundSize = 0;
+                ForEachEntry(dirLba, dirSize, [&](const std::string &name, uint32_t l, uint32_t sz, bool isDir) {
+                    if (!found && name == part && isDir == wantDir) {
+                        found = true;
+                        foundLba = l;
+                        foundSize = sz;
+                    }
+                });
+                if (!found) return false;
+                if (!wantDir) {
+                    lba = foundLba;
+                    size = foundSize;
+                    return true;
+                }
+                dirLba = foundLba;
+                dirSize = foundSize;
+                from = slash + 1;
+            }
+        }
+
+        // Lists every file on the disc in directory order, with its path.
+        struct Entry {
+            std::string path;
             uint32_t lba, size;
-            if (!FindFile(name, lba, size)) return false;
+        };
+        bool ListFiles(std::vector<Entry> &out) const {
+            uint32_t lba, size;
+            if (!Root(lba, size)) return false;
+            return Walk(lba, size, "", 0, out);
+        }
+
+        bool ReadExtent(uint32_t lba, uint32_t size, std::vector<uint8_t> &out) const {
             out.resize(((size_t)size + 2047) / 2048 * 2048);
             for (uint32_t s = 0; s < (size + 2047) / 2048; s++)
                 if (!Read(lba + s, out.data() + (size_t)s * 2048)) return false;
@@ -115,7 +157,27 @@ namespace {
             return true;
         }
 
+        bool ReadFile(const std::string &name, std::vector<uint8_t> &out) const {
+            uint32_t lba, size;
+            if (!FindFile(name, lba, size)) return false;
+            return ReadExtent(lba, size, out);
+        }
+
     private:
+        bool Walk(uint32_t dirLba, uint32_t dirSize, const std::string &prefix, int depth,
+                  std::vector<Entry> &out) const {
+            if (depth > 16) return true;
+            std::vector<Entry> dirs;
+            const bool ok = ForEachEntry(dirLba, dirSize, [&](const std::string &name, uint32_t l, uint32_t sz, bool isDir) {
+                if (isDir) dirs.push_back({prefix + name + "/", l, sz});
+                else out.push_back({prefix + name, l, sz});
+            });
+            if (!ok) return false;
+            for (const Entry &d : dirs)
+                if (!Walk(d.lba, d.size, d.path, depth + 1, out)) return false;
+            return true;
+        }
+
         static uint32_t Le32(const uint8_t *p) {
             return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
         }
@@ -161,6 +223,47 @@ DiscCheck CheckDisc(const Recipe &recipe, const std::string &discPath) {
     }
     result.ok = true;
     return result;
+}
+
+DiscInfo InspectDisc(const std::string &discPath, const DiscFileVisitor &visit) {
+    DiscInfo info;
+    ymir::media::Disc disc;
+    std::string loaderMessage;
+    if (!ymir::media::LoadDisc(P(discPath), disc, false,
+                               [&](ymir::media::MessageType, std::string msg) { loaderMessage = msg; })) {
+        info.error = "Cannot open the disc image" + (loaderMessage.empty() ? "." : ": " + loaderMessage);
+        return info;
+    }
+    const auto &h = disc.header;
+    info.title = TrimRight(h.gameTitle);
+    info.product = TrimRight(h.productNumber);
+    info.version = TrimRight(h.version);
+    info.releaseDate = TrimRight(h.releaseDate);
+    info.areaCodes = TrimRight(h.rawCompatAreaCode);
+    info.firstReadAddress = h.firstReadAddress;
+    info.firstReadSize = h.firstReadSize;
+
+    IsoReader iso(disc);
+    std::vector<IsoReader::Entry> entries;
+    if (!iso.ListFiles(entries)) {
+        info.error = "No ISO 9660 file system found on the data track.";
+        return info;
+    }
+    for (const auto &e : entries) {
+        DiscFile f;
+        f.path = e.path;
+        f.size = e.size;
+        f.lba = e.lba;
+        std::vector<uint8_t> data;
+        f.readable = iso.ReadExtent(e.lba, e.size, data);
+        if (f.readable) f.sha256 = Sha256Hex(data);
+        // The BIOS boots the first file of the root directory (file ID 2)
+        if (info.bootFile.empty() && e.path.find('/') == std::string::npos) info.bootFile = e.path;
+        if (visit && f.readable) visit(f, data);
+        info.files.push_back(std::move(f));
+    }
+    info.ok = true;
+    return info;
 }
 
 // ---- toolchain and processes ---------------------------------------------------------

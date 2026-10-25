@@ -5,6 +5,14 @@
 //                 [--clang PATH] [--linker PATH] [--jobs N] [--keep] [--check]
 //
 // --check only verifies the disc against the recipe.
+//
+//   drydock --inspect --disc game.cue [--dump PREFIX ...]
+//
+// --inspect prints what a new recipe needs: the disc header (product number,
+// region, boot file and its load address) and every file with its size and
+// SHA-256. With --dump (memory dumps written by `ymir-headless --dump
+// FRAME:PREFIX`), it also finds where each file was loaded in work RAM, and
+// prints a recipe skeleton.
 
 #include "build.hpp"
 
@@ -12,11 +20,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
+
+#include "inspect.hpp"
 
 int main(int argc, char **argv) {
     std::string recipePath, disc, out = ".", clang, linker;
     unsigned jobs = 0;
-    bool keep = false, checkOnly = false;
+    bool keep = false, checkOnly = false, inspect = false;
+    std::vector<std::string> dumps;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
         if (a == "--recipe" && i + 1 < argc) recipePath = argv[++i];
@@ -27,11 +39,21 @@ int main(int argc, char **argv) {
         else if (a == "--jobs" && i + 1 < argc) jobs = (unsigned)atoi(argv[++i]);
         else if (a == "--keep") keep = true;
         else if (a == "--check") checkOnly = true;
+        else if (a == "--inspect") inspect = true;
+        else if (a == "--dump" && i + 1 < argc) dumps.push_back(argv[++i]);
         else {
             fprintf(stderr, "usage: %s --recipe FILE --disc IMAGE [--out DIR] [--clang PATH] [--linker PATH] "
-                            "[--jobs N] [--keep] [--check]\n", argv[0]);
+                            "[--jobs N] [--keep] [--check]\n"
+                            "       %s --inspect --disc IMAGE [--dump PREFIX ...]\n", argv[0], argv[0]);
             return 2;
         }
+    }
+    if (inspect) {
+        if (disc.empty()) {
+            fprintf(stderr, "--disc is required\n");
+            return 2;
+        }
+        return drydock::RunInspect(disc, dumps);
     }
     if (recipePath.empty() || disc.empty()) {
         fprintf(stderr, "--recipe and --disc are required\n");

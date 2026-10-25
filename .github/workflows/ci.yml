@@ -28,3 +28,68 @@ jobs:
 
       - name: Fuzz (recompiled code vs interpreter)
         run: build/tests/fuzz/sh2fuzz-run build/tests/fuzz/fuzz_programs.bin
+
+  # Windows builds of the command-line tools, for writing new ships:
+  # drydock (inspect / check / build), ymir-headless (traces, dumps,
+  # screenshots) and sh2recomp, plus the Clang/LLD that drydock compiles with.
+  windows-tools:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+
+      - uses: TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c # v4.0.0
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: bash
+        run: |
+          LLVM="C:/Program Files/LLVM/bin"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_C_COMPILER=$LLVM/clang-cl.exe" "-DCMAKE_CXX_COMPILER=$LLVM/clang-cl.exe" \
+            "-DCMAKE_LINKER=$LLVM/lld-link.exe" "-DCMAKE_AR=$LLVM/llvm-lib.exe" -DCMAKE_LINKER_TYPE=LLD
+
+      - name: Build
+        run: cmake --build build --target drydock ymir-headless sh2recomp
+
+      - name: Package
+        shell: bash
+        run: |
+          set -e
+          P=pkg/drydock-tools
+          mkdir -p $P/tools/llvm
+          cp build/tools/drydock/drydock.exe build/tools/headless/ymir-headless.exe \
+             build/tools/sh2recomp/sh2recomp.exe $P/
+          LLVM_BIN="/c/Program Files/LLVM/bin"
+          cp "$LLVM_BIN/clang.exe" "$LLVM_BIN/lld-link.exe" $P/tools/llvm/
+          "$LLVM_BIN/clang.exe" --version | head -1 | tee $P/tools/llvm/VERSION.txt
+          cp LICENSE $P/LICENSE.txt
+          cat > $P/README.txt <<'TXT'
+          Drydock command-line tools (Windows x64)
+
+            drydock.exe --inspect --disc DISC [--dump PREFIX ...]
+                Disc header, every file with size and SHA-256, where each file is
+                loaded (with memory dumps) and a recipe skeleton.
+            drydock.exe --recipe ship\recipe.toml --disc DISC --check
+            drydock.exe --recipe ship\recipe.toml --disc DISC --out .
+                Builds recomp\<product>.dll with tools\llvm next to --out.
+            ymir-headless.exe BIOS DISC FRAMES [--press F:F2:BTN] [--png F]
+                              [--dump F:PREFIX] [--trace trace.txt] [--library DLL]
+
+          See https://github.com/luquimarti/Drydock
+          TXT
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          P=pkg/drydock-tools
+          $P/drydock.exe --help 2>&1 | grep -q -- "--inspect"
+          $P/ymir-headless.exe 2>&1 | grep -q usage
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: drydock-tools-windows-x64
+          path: pkg/drydock-tools

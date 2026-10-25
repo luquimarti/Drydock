@@ -30,6 +30,31 @@ struct DiscCheck {
 /// Reads and verifies the disc image (.cue/.chd/.iso/...) against the recipe.
 DiscCheck CheckDisc(const Recipe &recipe, const std::string &discPath);
 
+/// What a disc image contains: header fields and every file, for writing a new recipe.
+struct DiscFile {
+    std::string path; // "FILE.BIN" or "DIR/FILE.BIN"
+    uint32_t lba = 0;
+    uint32_t size = 0;
+    bool readable = false;
+    std::string sha256;
+};
+
+struct DiscInfo {
+    bool ok = false;
+    std::string error;
+    std::string title, product, version, releaseDate, areaCodes;
+    uint32_t firstReadAddress = 0; // load address of the boot file (IP.BIN)
+    uint32_t firstReadSize = 0;
+    std::string bootFile;          // first file of the root directory
+    std::vector<DiscFile> files;   // directory order
+};
+
+/// Called once per readable file with its contents (optional).
+using DiscFileVisitor = std::function<void(const DiscFile &file, const std::vector<uint8_t> &data)>;
+
+/// Reads the disc header and lists every file with its size and hash.
+DiscInfo InspectDisc(const std::string &discPath, const DiscFileVisitor &visit = {});
+
 struct Toolchain {
     std::string clang;  // clang / clang.exe
     std::string linker; // lld-link.exe on Windows; empty: clang -shared
