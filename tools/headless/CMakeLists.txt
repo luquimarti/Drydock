@@ -12,3 +12,8 @@ if (RECOMP_GENERATED)
     # Large, goto-heavy generated code: no LTO for it, to keep build times sane.
     set_source_files_properties(${RECOMP_GENERATED} PROPERTIES COMPILE_OPTIONS "${RECOMP_GENERATED_FLAGS}")
 endif ()
+
+# ymir-core reads physical CD drives through SetupAPI on Windows
+if (WIN32)
+    target_link_libraries(ymir-headless PRIVATE setupapi)
+endif ()
